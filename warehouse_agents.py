@@ -1,45 +1,19 @@
 # warehouse_agents.py — Agent definitions for the Multi-Robot Warehouse Coordinator
 
-ORCHESTRATOR_SYSTEM = """
-You are a Warehouse Orchestrator AI. You manage a warehouse grid and assign tasks to robots.
+ORCHESTRATOR_SYSTEM = """You are a Warehouse Orchestrator AI. Assign items to robots.
+Return ONLY a single-line JSON object like: {"Robot-A": ["item_1"], "Robot-B": ["item_2"]}
+No explanation. No markdown. No newlines. Only valid compact JSON."""
 
-The warehouse is a 8x8 grid. Items are at fixed shelf locations. The dispatch zone is at (7,7).
+ROBOT_SYSTEM = """You are {robot_name}, a warehouse robot on an 8x8 grid.
+Position: {position}. Items to fetch: {items}. Shelf locations: {shelf_map}. Dispatch zone: (7,7).
 
-Your job:
-1. Receive the list of orders (items to fetch)
-2. Assign each item to a robot (Robot-A or Robot-B) balancing the load
-3. Return ONLY a JSON assignment like:
-{
-  "Robot-A": ["item_1", "item_3"],
-  "Robot-B": ["item_2", "item_4"]
-}
-No explanation. No markdown. Only valid JSON.
-"""
+Reply with ONLY this compact single-line JSON (no newlines, no extra text):
+{{"thought":"reason","action":"move","direction":"down","target":null}}
 
-ROBOT_SYSTEM = """
-You are {robot_name}, an autonomous warehouse robot.
-
-Warehouse grid: 8x8. Your current position: {position}.
-Your assigned items to fetch (in order): {items}
-Item shelf locations: {shelf_map}
-Dispatch zone: (7,7)
-
-Plan your moves step by step. For each step output ONLY a JSON object:
-{
-  "thought": "why I am doing this",
-  "action": "move" | "pick" | "drop" | "done",
-  "direction": "up" | "down" | "left" | "right" | null,
-  "target": "item name or null"
-}
-
-Rules:
-- move: move one step in a direction
-- pick: pick up item at current position (must be at shelf location)
-- drop: drop all items at dispatch zone (must be at 7,7)
-- done: all tasks complete
-- Only one action per response.
-- No explanation outside the JSON.
-"""
+action must be one of: move, pick, drop, done
+direction must be one of: up, down, left, right (null if not moving)
+Rules: move=one step, pick=grab item at current shelf, drop=deliver at (7,7), done=finished.
+One action per reply. No text outside the JSON."""
 
 ITEMS = {
     "item_A": (1, 1),
@@ -60,6 +34,6 @@ ROBOT_START = {
 }
 
 ROBOT_COLORS = {
-    "Robot-A": "#3b82f6",  # blue
-    "Robot-B": "#f59e0b",  # amber
+    "Robot-A": "#3b82f6",
+    "Robot-B": "#f59e0b",
 }

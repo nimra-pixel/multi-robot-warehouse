@@ -243,7 +243,7 @@ def run_mission(selected_items, api_key):
                 raw = call_groq(client, robot_prompt, context, max_tokens=150)
                 action_obj = parse_action(raw)
             except Exception as e:
-                action_obj = {"action": "done", "thought": str(e), "direction": None, "target": None}
+                action_obj = {"action": "move", "thought": str(e), "direction": "down", "target": None}
 
             robot_states[robot_name] = simulate_robot_step(rs, action_obj)
 
