@@ -3,10 +3,10 @@ import json
 import time
 from groq import Groq
 from warehouse_agents import (
-    ORCHESTRATOR_SYSTEM, ROBOT_SYSTEM,
+    ORCHESTRATOR_SYSTEM,
     ITEMS, DISPATCH_ZONE, ROBOT_START, ROBOT_COLORS
 )
-from warehouse_runner import parse_action, simulate_robot_step, all_items_collected
+from warehouse_runner import simulate_robot_full, all_items_collected
 from warehouse_grid import render_grid
 
 st.set_page_config(
@@ -19,19 +19,17 @@ st.markdown("""
 <style>
   .log-card {
     border-radius: 8px;
-    padding: 10px 14px;
-    margin: 5px 0;
+    padding: 8px 12px;
+    margin: 4px 0;
     font-size: 13px;
     border-left: 4px solid #e2e8f0;
     background: #fff;
   }
   .log-card.move   { border-color: #3b82f6; }
-  .log-card.pick   { border-color: #7c3aed; }
-  .log-card.drop   { border-color: #10b981; }
+  .log-card.pick   { border-color: #7c3aed; background: #faf5ff; }
+  .log-card.drop   { border-color: #10b981; background: #f0fdf4; }
   .log-card.done   { border-color: #f59e0b; background: #fffbeb; }
-  .log-card.think  { border-color: #94a3b8; background: #f8fafc; }
-  .robot-header    { font-weight: 700; font-size: 15px; margin: 12px 0 4px 0; }
-  .status-bar      { padding: 8px 14px; border-radius: 8px; margin: 6px 0; font-size: 13px; }
+  .robot-header    { font-weight: 700; font-size: 14px; margin: 10px 0 4px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -47,15 +45,13 @@ with st.sidebar:
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
     ])
-    max_steps = st.slider("Max steps per robot", 10, 40, 25)
+    speed = st.slider("Animation speed (sec/step)", 0.05, 0.5, 0.15)
     st.divider()
-
     st.markdown("### 🗺️ Warehouse Map")
     st.markdown("**Grid:** 8×8  |  **Dispatch:** (7,7)")
     st.markdown("**Shelves:**")
     for item, pos in ITEMS.items():
         st.markdown(f"- `{item}` → {pos}")
-
     st.divider()
     st.markdown("### 🤖 Robots")
     for name, pos in ROBOT_START.items():
@@ -64,7 +60,7 @@ with st.sidebar:
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🏭 Multi-Robot Warehouse Coordinator")
-st.caption("Two AI agents control two robots to collaboratively fulfil warehouse orders using Groq + Llama 3.")
+st.caption("Orchestrator AI assigns tasks · Robots navigate autonomously · Groq + Llama 3")
 
 # ── Order selection ───────────────────────────────────────────────────────────
 st.markdown("### 📋 Select Items to Fetch")
@@ -77,19 +73,15 @@ for i, item in enumerate(item_list):
         if st.checkbox(f"📦 {item}", value=(i < 4), key=f"item_{item}"):
             selected.append(item)
 
-preset_col1, preset_col2, preset_col3 = st.columns(3)
-with preset_col1:
-    if st.button("🎯 Quick order (4 items)", use_container_width=True):
-        selected = item_list[:4]
+pc1, pc2, pc3 = st.columns(3)
+with pc1:
+    if st.button("🎯 First 4 items", use_container_width=True):
         st.rerun()
-with preset_col2:
-    if st.button("📦 Full warehouse (all 8)", use_container_width=True):
-        selected = item_list
+with pc2:
+    if st.button("📦 All 8 items", use_container_width=True):
         st.rerun()
-with preset_col3:
-    if st.button("🔀 Random 3 items", use_container_width=True):
-        import random
-        selected = random.sample(item_list, 3)
+with pc3:
+    if st.button("🔀 Random 3", use_container_width=True):
         st.rerun()
 
 st.markdown(f"**Selected:** {', '.join(selected) if selected else 'None'}")
@@ -97,181 +89,144 @@ st.divider()
 
 run_btn = st.button("▶ Start Mission", type="primary", disabled=not selected or not api_key)
 if not api_key:
-    st.warning("Enter your Groq API key in the sidebar to start.")
+    st.warning("Enter your Groq API key in the sidebar.")
 if not selected:
     st.info("Select at least one item to fetch.")
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
-def call_groq(client, system, user, max_tokens=300):
-    resp = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user},
-        ],
-    )
-    return resp.choices[0].message.content.strip()
-
-
-def run_mission(selected_items, api_key):
+# ── Orchestrator: uses LLM to assign tasks ────────────────────────────────────
+def assign_tasks(selected_items, api_key):
     client = Groq(api_key=api_key)
-
-    # ── Step 1: Orchestrator assigns tasks ────────────────────────────────────
-    st.markdown("### 🎯 Orchestrator — Assigning Tasks")
-    with st.spinner("Orchestrator deciding assignments…"):
-        orch_user = (
-            f"Orders to fulfil: {selected_items}\n"
-            f"Assign each item to Robot-A or Robot-B to balance the work."
-        )
-        raw_assign = call_groq(client, ORCHESTRATOR_SYSTEM, orch_user, max_tokens=200)
-
     try:
-        raw_clean = raw_assign.strip().strip("```json").strip("```").strip()
-        start = raw_clean.find("{"); end = raw_clean.rfind("}") + 1
-        assignment = json.loads(raw_clean[start:end])
+        resp = client.chat.completions.create(
+            model=model,
+            max_tokens=100,
+            messages=[
+                {"role": "system", "content": ORCHESTRATOR_SYSTEM},
+                {"role": "user", "content": f"Items to assign: {selected_items}"},
+            ],
+        )
+        raw = resp.choices[0].message.content.strip()
+        raw = raw.replace("```json","").replace("```","").strip()
+        start = raw.find("{"); end = raw.rfind("}") + 1
+        assignment = json.loads(raw[start:end])
         assignment = {k: [i for i in v if i in selected_items] for k, v in assignment.items()}
+        # Ensure both robots exist
+        if "Robot-A" not in assignment: assignment["Robot-A"] = []
+        if "Robot-B" not in assignment: assignment["Robot-B"] = []
+        return assignment
     except Exception:
-        # fallback: split evenly
         half = len(selected_items) // 2
-        assignment = {
-            "Robot-A": selected_items[:half] or selected_items,
+        return {
+            "Robot-A": selected_items[:half] if half else selected_items,
             "Robot-B": selected_items[half:],
         }
 
-    st.success(f"**Robot-A:** {assignment.get('Robot-A', [])}  |  **Robot-B:** {assignment.get('Robot-B', [])}")
 
-    # ── Step 2: Init robot states ─────────────────────────────────────────────
-    robot_states = {
-        "Robot-A": {
-            "pos": ROBOT_START["Robot-A"],
-            "inventory": [],
-            "completed": [],
-            "assigned": assignment.get("Robot-A", []),
-            "log": [],
-            "done": False,
-        },
-        "Robot-B": {
-            "pos": ROBOT_START["Robot-B"],
-            "inventory": [],
-            "completed": [],
-            "assigned": assignment.get("Robot-B", []),
-            "log": [],
-            "done": False,
-        },
+# ── Main mission ──────────────────────────────────────────────────────────────
+def run_mission(selected_items, api_key):
+
+    # Step 1: Orchestrator assigns
+    st.markdown("### 🎯 Orchestrator — Assigning Tasks")
+    with st.spinner("Orchestrator thinking…"):
+        assignment = assign_tasks(selected_items, api_key)
+
+    st.success(f"**Robot-A:** {assignment['Robot-A']}  |  **Robot-B:** {assignment['Robot-B']}")
+
+    # Step 2: Pre-compute full deterministic paths for both robots
+    robot_a_state = {
+        "name": "Robot-A",
+        "pos": ROBOT_START["Robot-A"],
+        "inventory": [],
+        "completed": [],
+        "assigned": assignment["Robot-A"],
+    }
+    robot_b_state = {
+        "name": "Robot-B",
+        "pos": ROBOT_START["Robot-B"],
+        "inventory": [],
+        "completed": [],
+        "assigned": assignment["Robot-B"],
     }
 
-    # Mark robots with no assignments as done
-    for name, rs in robot_states.items():
-        if not rs["assigned"]:
-            rs["done"] = True
+    steps_a = simulate_robot_full(robot_a_state) if assignment["Robot-A"] else [{"action":"done","thought":"no tasks","result":"idle","pos":ROBOT_START["Robot-A"],"inventory":[],"completed":[]}]
+    steps_b = simulate_robot_full(robot_b_state) if assignment["Robot-B"] else [{"action":"done","thought":"no tasks","result":"idle","pos":ROBOT_START["Robot-B"],"inventory":[],"completed":[]}]
 
-    # ── Step 3: Live simulation ───────────────────────────────────────────────
+    # Step 3: Animate both robots simultaneously
     st.markdown("### 🤖 Live Simulation")
     grid_col, log_col = st.columns([1, 1])
-
     grid_placeholder = grid_col.empty()
     log_placeholder  = log_col.empty()
 
-    step_count = 0
+    max_steps = max(len(steps_a), len(steps_b))
+
+    # Current display state
+    display = {
+        "Robot-A": {"pos": ROBOT_START["Robot-A"], "inventory": [], "completed": [], "log": [], "assigned": assignment["Robot-A"]},
+        "Robot-B": {"pos": ROBOT_START["Robot-B"], "inventory": [], "completed": [], "log": [], "assigned": assignment["Robot-B"]},
+    }
 
     def render_logs():
         html = ""
-        for robot_name, rs in robot_states.items():
-            color = ROBOT_COLORS[robot_name]
-            inv   = rs["inventory"]
-            done  = rs["done"]
-            comp  = rs["completed"]
+        for rname, rs in display.items():
+            color = ROBOT_COLORS[rname]
             html += (
                 f'<div class="robot-header" style="color:{color}">'
-                f'{"🏁" if done else "🤖"} {robot_name} '
-                f'| pos {rs["pos"]} | carrying: {inv or "nothing"} | done: {comp}'
+                f'{"🏁" if rs.get("done") else "🤖"} {rname} | pos {rs["pos"]} | '
+                f'carrying: {rs["inventory"] or "nothing"} | delivered: {rs["completed"]}'
                 f'</div>'
             )
-            for entry in rs["log"][-6:]:
-                action  = entry.get("action", "")
-                thought = entry.get("thought", "")
-                result  = entry.get("result", "")
-                css     = action if action in ("move","pick","drop","done") else "think"
+            for entry in rs["log"][-5:]:
+                css = entry["action"]
                 html += (
                     f'<div class="log-card {css}">'
-                    f'<b>{action.upper()}</b> — {result}<br>'
-                    f'<span style="color:#94a3b8;font-size:11px">💭 {thought}</span>'
+                    f'<b>{entry["action"].upper()}</b> — {entry["result"]}<br>'
+                    f'<span style="color:#94a3b8;font-size:11px">💭 {entry["thought"]}</span>'
                     f'</div>'
                 )
         return html
 
-    # Initial render
-    grid_placeholder.markdown(render_grid(robot_states), unsafe_allow_html=True)
-    log_placeholder.markdown(render_logs(), unsafe_allow_html=True)
+    for i in range(max_steps):
+        # Apply step i for each robot if available
+        if i < len(steps_a):
+            s = steps_a[i]
+            display["Robot-A"]["pos"]       = s["pos"]
+            display["Robot-A"]["inventory"] = s["inventory"]
+            display["Robot-A"]["completed"] = s["completed"]
+            display["Robot-A"]["log"].append(s)
+            if s["action"] == "done":
+                display["Robot-A"]["done"] = True
 
-    while step_count < max_steps:
-        if all_items_collected(robot_states):
-            break
+        if i < len(steps_b):
+            s = steps_b[i]
+            display["Robot-B"]["pos"]       = s["pos"]
+            display["Robot-B"]["inventory"] = s["inventory"]
+            display["Robot-B"]["completed"] = s["completed"]
+            display["Robot-B"]["log"].append(s)
+            if s["action"] == "done":
+                display["Robot-B"]["done"] = True
 
-        for robot_name, rs in robot_states.items():
-            if rs["done"]:
-                continue
-            if not rs["assigned"]:
-                rs["done"] = True
-                continue
+        grid_placeholder.markdown(render_grid(display), unsafe_allow_html=True)
+        log_placeholder.markdown(render_logs(), unsafe_allow_html=True)
+        time.sleep(speed)
 
-            # Build robot prompt
-            remaining = [i for i in rs["assigned"] if i not in rs["completed"]]
-            if not remaining and not rs["inventory"]:
-                rs["done"] = True
-                continue
-
-            robot_prompt = ROBOT_SYSTEM.format(
-                robot_name=robot_name,
-                position=rs["pos"],
-                items=remaining,
-                shelf_map={k: v for k, v in ITEMS.items() if k in rs["assigned"]},
-            )
-
-            context = (
-                f"Current position: {rs['pos']}\n"
-                f"Inventory: {rs['inventory']}\n"
-                f"Items still to fetch: {remaining}\n"
-                f"Items completed: {rs['completed']}\n"
-                f"Dispatch zone at: {DISPATCH_ZONE}\n"
-                f"What is your next single action?"
-            )
-
-            try:
-                raw = call_groq(client, robot_prompt, context, max_tokens=150)
-                action_obj = parse_action(raw)
-            except Exception as e:
-                action_obj = {"action": "move", "thought": str(e), "direction": "down", "target": None}
-
-            robot_states[robot_name] = simulate_robot_step(rs, action_obj)
-
-            # Re-render after each robot step
-            grid_placeholder.markdown(render_grid(robot_states), unsafe_allow_html=True)
-            log_placeholder.markdown(render_logs(), unsafe_allow_html=True)
-
-            time.sleep(0.3)
-
-        step_count += 1
-
-    # ── Final summary ─────────────────────────────────────────────────────────
+    # Step 4: Summary
     st.divider()
     st.markdown("### 📊 Mission Summary")
-    total_items = sum(len(rs["completed"]) for rs in robot_states.values())
-    total_assigned = len(selected_items)
-    success = total_items == total_assigned
+    total_delivered = len(display["Robot-A"]["completed"]) + len(display["Robot-B"]["completed"])
+    total_assigned  = len(selected_items)
 
-    if success:
-        st.success(f"✅ Mission Complete! All {total_items} items delivered to dispatch zone.")
+    if total_delivered >= total_assigned:
+        st.success(f"✅ Mission Complete! All {total_delivered} items delivered to dispatch zone.")
     else:
-        st.warning(f"⚠️ Mission ended. {total_items}/{total_assigned} items delivered.")
+        st.warning(f"⚠️ Mission ended. {total_delivered}/{total_assigned} items delivered.")
 
-    scol1, scol2 = st.columns(2)
-    for col, (name, rs) in zip([scol1, scol2], robot_states.items()):
-        color = ROBOT_COLORS[name]
+    sc1, sc2 = st.columns(2)
+    for col, rname in zip([sc1, sc2], ["Robot-A", "Robot-B"]):
+        color = ROBOT_COLORS[rname]
+        rs = display[rname]
         with col:
-            st.markdown(f'<b style="color:{color}">{name}</b>', unsafe_allow_html=True)
+            st.markdown(f'<b style="color:{color}">{rname}</b>', unsafe_allow_html=True)
             st.markdown(f"- Assigned: {rs['assigned']}")
             st.markdown(f"- Delivered: {rs['completed']}")
             st.markdown(f"- Steps taken: {len(rs['log'])}")
@@ -283,3 +238,5 @@ if run_btn and selected and api_key:
         run_mission(selected, api_key)
     except Exception as e:
         st.error(f"Mission error: {e}")
+        import traceback
+        st.code(traceback.format_exc())
