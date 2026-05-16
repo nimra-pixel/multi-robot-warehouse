@@ -1,29 +1,15 @@
-# 🏭 Multi-Robot Warehouse Coordinator
+# 🏭 Warehouse Fleet Intelligence Platform
 
-A multi-agent AI system where two autonomous robots collaborate to fulfil warehouse orders — powered by **Groq (free)** + Llama 3 + Streamlit.
+A next-generation multi-robot warehouse coordination system with:
 
----
-
-## How It Works
-
-```
-User selects items to fetch
-        │
-        ▼
-Orchestrator Agent (Llama 3)
-  └── Assigns items to Robot-A and Robot-B
-        │
-        ├── Robot-A Agent → plans moves → navigates → picks items → drops at dispatch
-        └── Robot-B Agent → plans moves → navigates → picks items → drops at dispatch
-```
-
-- **8×8 warehouse grid** with 8 shelf locations and a dispatch zone at (7,7)
-- **Orchestrator** balances the item load between robots
-- **Each robot** is its own LLM agent reasoning step-by-step
-- **Live SVG grid** shows both robots moving in real time
-- **Side-by-side logs** show each robot's thoughts and actions
-
----
+- 🤖 **2 autonomous robots** with battery, health, velocity, collision risk
+- 🧠 **AI Orchestrator** (Groq + Llama 3) assigns tasks intelligently
+- 🗺️ **A* pathfinding + MAPF** — collision-free routing between robots
+- 🚶 **Dynamic obstacles** — moving humans and forklifts, real-time rerouting
+- ⚡ **Auto-charging** — robots return to station below 15% battery
+- 📊 **Live KPI dashboard** — tasks/hour, idle time, collisions avoided, delivery time
+- 🌑 **Dark futuristic UI** — industrial-grade interface with robot trails and stat bars
+- 10×10 warehouse grid with 10 shelf locations, static obstacles, dispatch zone
 
 ## Quick Start
 
@@ -32,32 +18,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Paste your free Groq API key in the sidebar → select items → click **Start Mission**.
-
----
-
-## Deploy to Streamlit Cloud
+## Deploy
 
 ```bash
-git init
 git add .
-git commit -m "initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/multi-robot-warehouse.git
-git push -u origin main
+git commit -m "v2: Fleet Intelligence Platform"
+git push
 ```
 
-Then on [share.streamlit.io](https://share.streamlit.io):
-- Main file: `app.py`
-- Secrets: `GROQ_API_KEY = "gsk_..."`
-
----
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `app.py` | Streamlit UI + mission orchestration |
-| `warehouse_agents.py` | Agent system prompts, item/robot definitions |
-| `warehouse_runner.py` | Robot movement simulation logic |
-| `warehouse_grid.py` | SVG grid renderer |
-| `requirements.txt` | groq + streamlit only |
+Streamlit Cloud secrets: `GROQ_API_KEY = "gsk_..."`

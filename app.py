@@ -1,250 +1,370 @@
 import streamlit as st
 import json
 import time
+import random
+import math
 from groq import Groq
-from warehouse_agents import (
-    ORCHESTRATOR_SYSTEM,
-    ITEMS, DISPATCH_ZONE, ROBOT_START, ROBOT_COLORS
+from warehouse_config import (
+    ITEMS, DISPATCH_ZONE, ROBOT_START, ROBOT_COLORS,
+    ORCHESTRATOR_SYSTEM, CHARGING_STATIONS
 )
-from warehouse_runner import simulate_robot_full, all_items_collected
+from warehouse_engine import simulate_fleet
 from warehouse_grid import render_grid
 
 st.set_page_config(
-    page_title="Multi-Robot Warehouse Coordinator",
+    page_title="Warehouse Fleet Intelligence Platform",
     page_icon="🏭",
     layout="wide",
 )
 
+# ── Dark UI CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-  .log-card {
-    border-radius: 8px;
-    padding: 8px 12px;
-    margin: 4px 0;
-    font-size: 13px;
-    border-left: 4px solid #e2e8f0;
-    background: #fff;
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  html, body, [class*="css"] {
+    background-color: #0a0f1e !important;
+    color: #c9d8f0 !important;
+    font-family: 'JetBrains Mono', monospace !important;
   }
-  .log-card.move   { border-color: #3b82f6; }
-  .log-card.pick   { border-color: #7c3aed; background: #faf5ff; }
-  .log-card.drop   { border-color: #10b981; background: #f0fdf4; }
-  .log-card.done   { border-color: #f59e0b; background: #fffbeb; }
-  .robot-header    { font-weight: 700; font-size: 14px; margin: 10px 0 4px 0; }
+  .stApp { background-color: #0a0f1e !important; }
+  .block-container { padding-top: 1.5rem !important; }
+
+  h1, h2, h3 { color: #00d4ff !important; letter-spacing: 1px; }
+  .stCaption  { color: #5a7a9a !important; }
+
+  /* Sidebar */
+  [data-testid="stSidebar"] {
+    background-color: #060c1a !important;
+    border-right: 1px solid #1e3a5f !important;
+  }
+
+  /* Buttons */
+  .stButton > button {
+    background: #0d1f3c !important;
+    color: #00d4ff !important;
+    border: 1px solid #00d4ff44 !important;
+    border-radius: 6px !important;
+    font-family: monospace !important;
+    transition: all 0.2s;
+  }
+  .stButton > button:hover {
+    background: #00d4ff22 !important;
+    border-color: #00d4ff !important;
+  }
+  .stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #00d4ff22, #7c3aed22) !important;
+    border: 1px solid #00d4ff !important;
+    color: #00d4ff !important;
+    font-weight: bold !important;
+  }
+
+  /* Metrics */
+  [data-testid="stMetric"] {
+    background: #0d1526 !important;
+    border: 1px solid #1e3a5f !important;
+    border-radius: 8px !important;
+    padding: 10px !important;
+  }
+  [data-testid="stMetricValue"] { color: #00d4ff !important; font-size: 1.4rem !important; }
+  [data-testid="stMetricLabel"] { color: #5a7a9a !important; font-size: 0.7rem !important; }
+
+  /* Checkboxes */
+  .stCheckbox label { color: #8aaccc !important; font-size: 12px !important; }
+
+  /* Selectbox / slider */
+  .stSelectbox label, .stSlider label { color: #5a7a9a !important; font-size: 12px !important; }
+
+  /* Log cards */
+  .log-card {
+    border-radius: 6px;
+    padding: 7px 12px;
+    margin: 3px 0;
+    font-size: 11px;
+    font-family: monospace;
+    border-left: 3px solid #1e3a5f;
+    background: #0d1526;
+    color: #8aaccc;
+  }
+  .log-card.move   { border-color: #00d4ff44; }
+  .log-card.pick   { border-color: #7c3aed; background: #130d26; }
+  .log-card.drop   { border-color: #00ff88; background: #0a1f14; }
+  .log-card.done   { border-color: #ffd700; background: #1a1a0d; }
+  .log-card.wait   { border-color: #ff440044; }
+  .log-card.charge { border-color: #ffd700; background: #1a1500; }
+  .log-card.emergency { border-color: #ff4444; background: #1f0a0a; }
+
+  .robot-header {
+    font-weight: 700;
+    font-size: 13px;
+    margin: 10px 0 4px 0;
+    font-family: monospace;
+    letter-spacing: 1px;
+  }
+  .stat-bar-label { font-size: 10px; color: #5a7a9a; font-family: monospace; }
+
+  /* Progress bar */
+  .stProgress > div > div { background: #00d4ff !important; }
+
+  /* Divider */
+  hr { border-color: #1e3a5f !important; }
+
+  /* Expander */
+  .streamlit-expanderHeader { color: #00d4ff !important; }
+  [data-testid="stExpander"] { border: 1px solid #1e3a5f !important; background: #0d1526 !important; }
+
+  /* Text input */
+  .stTextInput input {
+    background: #0d1526 !important;
+    border: 1px solid #1e3a5f !important;
+    color: #c9d8f0 !important;
+    font-family: monospace !important;
+  }
+
+  /* Success/warning/error */
+  .stSuccess { background: #0a1f14 !important; border: 1px solid #00ff88 !important; color: #00ff88 !important; }
+  .stWarning { background: #1a1500 !important; border: 1px solid #ffd700 !important; color: #ffd700 !important; }
+  .stError   { background: #1f0a0a !important; border: 1px solid #ff4444 !important; color: #ff4444 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Load key from secrets ─────────────────────────────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────
 default_key = st.secrets.get("GROQ_API_KEY", "")
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.title("⚙️ Settings")
-    st.markdown("🆓 Free Groq key at [console.groq.com](https://console.groq.com)")
-    api_key = st.text_input("Groq API Key", value=default_key, type="password", placeholder="gsk_...")
-    model = st.selectbox("Model", [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ])
-    speed = st.slider("Animation speed (sec/step)", 0.05, 0.5, 0.15)
+    st.markdown("## ⚙️ FLEET CONFIG")
+    st.markdown('<span style="color:#5a7a9a;font-size:11px">🆓 Free key: console.groq.com</span>', unsafe_allow_html=True)
+    api_key = st.text_input("GROQ API KEY", value=default_key, type="password", placeholder="gsk_...")
+    model = st.selectbox("LLM MODEL", ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"])
+    speed = st.slider("ANIMATION SPEED (s/frame)", 0.02, 0.3, 0.08)
     st.divider()
-    st.markdown("### 🗺️ Warehouse Map")
-    st.markdown("**Grid:** 8×8  |  **Dispatch:** (7,7)")
-    st.markdown("**Shelves:**")
+
+    st.markdown("### 🗺️ WAREHOUSE MAP")
+    st.markdown(f'<span style="color:#5a7a9a;font-size:11px">Grid: 10×10 | Dispatch: {DISPATCH_ZONE}</span>', unsafe_allow_html=True)
+    st.markdown('<span style="color:#5a7a9a;font-size:11px">Shelves:</span>', unsafe_allow_html=True)
     for item, pos in ITEMS.items():
-        st.markdown(f"- `{item}` → {pos}")
+        st.markdown(f'<span style="color:#7c3aed;font-size:11px">▸ `{item}` → {pos}</span>', unsafe_allow_html=True)
     st.divider()
-    st.markdown("### 🤖 Robots")
+    st.markdown("### 🤖 ROBOTS")
     for name, pos in ROBOT_START.items():
         color = ROBOT_COLORS[name]
-        st.markdown(f'<span style="color:{color}">●</span> **{name}** starts at {pos}', unsafe_allow_html=True)
+        st.markdown(f'<span style="color:{color};font-size:12px">◉ {name}</span> <span style="color:#5a7a9a;font-size:11px">starts {pos} | charge {CHARGING_STATIONS[name]}</span>', unsafe_allow_html=True)
+    st.divider()
+    st.markdown('<span style="color:#5a7a9a;font-size:10px">⚠️ Static obstacles: 6 cells<br>🚶 Dynamic: 3 humans + 1 forklift<br>🔋 Auto-charge below 15%</span>', unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.title("🏭 Multi-Robot Warehouse Coordinator")
-st.caption("Orchestrator AI assigns tasks · Robots navigate autonomously · Groq + Llama 3")
+st.markdown("# 🏭 WAREHOUSE FLEET INTELLIGENCE PLATFORM")
+st.caption("Multi-Robot Coordination · MAPF · Dynamic Obstacles · Real-Time KPIs · Powered by Groq + Llama 3")
+st.divider()
 
-# ── Order selection ───────────────────────────────────────────────────────────
-st.markdown("### 📋 Select Items to Fetch")
+# ── Item selection ────────────────────────────────────────────────────────────
+st.markdown("### 📋 MISSION ORDERS")
 item_list = list(ITEMS.keys())
-import random as _random
 
-# Preset buttons — must run BEFORE checkboxes so session_state is set first
-pc1, pc2, pc3 = st.columns(3)
+pc1, pc2, pc3, pc4 = st.columns(4)
 with pc1:
-    if st.button("🎯 First 4 items", use_container_width=True):
+    if st.button("🎯 First 5", use_container_width=True):
         for i, item in enumerate(item_list):
-            st.session_state[f"item_{item}"] = (i < 4)
+            st.session_state[f"item_{item}"] = (i < 5)
 with pc2:
-    if st.button("📦 All 8 items", use_container_width=True):
+    if st.button("📦 All 10", use_container_width=True):
         for item in item_list:
             st.session_state[f"item_{item}"] = True
 with pc3:
-    if st.button("🔀 Random 3", use_container_width=True):
-        picks = set(_random.sample(item_list, 3))
+    if st.button("🔀 Random 4", use_container_width=True):
+        picks = set(random.sample(item_list, 4))
         for item in item_list:
             st.session_state[f"item_{item}"] = (item in picks)
+with pc4:
+    if st.button("🧹 Clear", use_container_width=True):
+        for item in item_list:
+            st.session_state[f"item_{item}"] = False
 
-# Render checkboxes driven by session_state
-col1, col2, col3, col4 = st.columns(4)
+cols = st.columns(5)
 selected = []
 for i, item in enumerate(item_list):
-    col = [col1, col2, col3, col4][i % 4]
-    with col:
-        default = st.session_state.get(f"item_{item}", i < 4)
+    with cols[i % 5]:
+        default = st.session_state.get(f"item_{item}", i < 5)
         if st.checkbox(f"📦 {item}", value=default, key=f"item_{item}"):
             selected.append(item)
 
-st.markdown(f"**Selected:** {', '.join(selected) if selected else 'None'}")
+st.markdown(f'<span style="color:#00d4ff;font-size:12px">SELECTED: {", ".join(selected) if selected else "none"}</span>', unsafe_allow_html=True)
 st.divider()
 
-run_btn = st.button("▶ Start Mission", type="primary", disabled=not selected or not api_key)
+run_btn = st.button("▶ LAUNCH MISSION", type="primary", disabled=not selected or not api_key)
 if not api_key:
-    st.warning("Enter your Groq API key in the sidebar.")
+    st.warning("⚠️ GROQ API KEY REQUIRED")
 if not selected:
-    st.info("Select at least one item to fetch.")
+    st.markdown('<span style="color:#5a7a9a;font-size:12px">Select items above to begin mission</span>', unsafe_allow_html=True)
 
 
-# ── Orchestrator: uses LLM to assign tasks ────────────────────────────────────
+# ── Orchestrator ──────────────────────────────────────────────────────────────
 def assign_tasks(selected_items, api_key):
     client = Groq(api_key=api_key)
     try:
         resp = client.chat.completions.create(
             model=model,
-            max_tokens=100,
+            max_tokens=120,
             messages=[
                 {"role": "system", "content": ORCHESTRATOR_SYSTEM},
-                {"role": "user", "content": f"Items to assign: {selected_items}"},
+                {"role": "user", "content": f"Assign these items to Robot-A and Robot-B: {selected_items}"},
             ],
         )
-        raw = resp.choices[0].message.content.strip()
-        raw = raw.replace("```json","").replace("```","").strip()
-        start = raw.find("{"); end = raw.rfind("}") + 1
-        assignment = json.loads(raw[start:end])
+        raw = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
+        s = raw.find("{"); e = raw.rfind("}") + 1
+        assignment = json.loads(raw[s:e])
         assignment = {k: [i for i in v if i in selected_items] for k, v in assignment.items()}
-        # Ensure both robots exist
         if "Robot-A" not in assignment: assignment["Robot-A"] = []
         if "Robot-B" not in assignment: assignment["Robot-B"] = []
-        # Ensure ALL selected items are assigned (fix LLM dropping items)
+        # Ensure all items assigned
         assigned_all = assignment["Robot-A"] + assignment["Robot-B"]
         unassigned = [i for i in selected_items if i not in assigned_all]
-        for i, item in enumerate(unassigned):
-            key = "Robot-A" if i % 2 == 0 else "Robot-B"
+        for idx, item in enumerate(unassigned):
+            key = "Robot-A" if idx % 2 == 0 else "Robot-B"
             assignment[key].append(item)
         return assignment
     except Exception:
         half = len(selected_items) // 2
         return {
-            "Robot-A": selected_items[:half] if half else selected_items,
+            "Robot-A": selected_items[:half] or selected_items,
             "Robot-B": selected_items[half:],
         }
 
 
-# ── Main mission ──────────────────────────────────────────────────────────────
-def run_mission(selected_items, api_key):
+# ── KPI Dashboard ─────────────────────────────────────────────────────────────
+def render_kpi(kpi, robot_frame, total_items):
+    delivered = kpi.get("total_delivered", 0)
+    steps = kpi.get("total_steps", 0)
+    avoided = kpi.get("collisions_avoided", 0)
+    rerouts = kpi.get("emergency_rerouts", 0)
+    dt = kpi.get("delivery_times", [])
+    avg_dt = round(sum(dt)/len(dt), 1) if dt else "--"
+    idle_a = kpi.get("idle_steps", {}).get("Robot-A", 0)
+    idle_b = kpi.get("idle_steps", {}).get("Robot-B", 0)
 
-    # Step 1: Orchestrator assigns
-    st.markdown("### 🎯 Orchestrator — Assigning Tasks")
-    with st.spinner("Orchestrator thinking…"):
-        assignment = assign_tasks(selected_items, api_key)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("📦 DELIVERED", f"{delivered}/{total_items}")
+    k2.metric("⏱ STEPS", steps)
+    k3.metric("🛡 COLLISIONS AVOIDED", avoided)
+    k4.metric("⚠️ EMERGENCY REROUTS", rerouts)
+    k5.metric("⏳ AVG DELIVERY", f"{avg_dt}s")
+    k6.metric("💤 IDLE (A/B)", f"{idle_a}/{idle_b}")
 
-    st.success(f"**Robot-A:** {assignment['Robot-A']}  |  **Robot-B:** {assignment['Robot-B']}")
+    # Robot stat bars
+    sc1, sc2 = st.columns(2)
+    for col, name in zip([sc1, sc2], ["Robot-A", "Robot-B"]):
+        rs = robot_frame.get(name, {})
+        stats = rs.get("stats", {})
+        color = ROBOT_COLORS[name]
+        with col:
+            batt = stats.get("battery", 100)
+            health = stats.get("health", 100)
+            vel = stats.get("velocity", 1.0)
+            risk = stats.get("collision_risk", 0.0)
+            emergency = rs.get("emergency", False)
 
-    # Step 2: Pre-compute full deterministic paths for both robots
-    robot_a_state = {
-        "name": "Robot-A",
-        "pos": ROBOT_START["Robot-A"],
-        "inventory": [],
-        "completed": [],
-        "assigned": assignment["Robot-A"],
-    }
-    robot_b_state = {
-        "name": "Robot-B",
-        "pos": ROBOT_START["Robot-B"],
-        "inventory": [],
-        "completed": [],
-        "assigned": assignment["Robot-B"],
-    }
+            label = "⚠️ EMERGENCY" if emergency else ("✅ ACTIVE" if not rs.get("done") else "🏁 DONE")
+            st.markdown(
+                f'<div style="background:#0d1526;border:1px solid {color}44;border-radius:8px;padding:10px;margin:4px 0;">'
+                f'<span style="color:{color};font-weight:bold;font-size:13px">◉ {name}</span> '
+                f'<span style="color:#5a7a9a;font-size:10px">{label}</span><br>'
+                f'<span style="color:#5a7a9a;font-size:10px">🔋 Battery</span><br>'
+                f'<div style="background:#1e3a5f;border-radius:3px;height:6px;margin:2px 0 6px 0;">'
+                f'<div style="background:{"#00ff88" if batt>50 else "#ffd700" if batt>20 else "#ff4444"};'
+                f'width:{batt}%;height:6px;border-radius:3px;"></div></div>'
+                f'<span style="color:#5a7a9a;font-size:10px">❤️ Health</span><br>'
+                f'<div style="background:#1e3a5f;border-radius:3px;height:6px;margin:2px 0 6px 0;">'
+                f'<div style="background:#00d4ff;width:{health:.0f}%;height:6px;border-radius:3px;"></div></div>'
+                f'<span style="color:#5a7a9a;font-size:10px">⚡ Velocity: {vel} m/s &nbsp;|&nbsp; ⚠️ Risk: {risk:.0%}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-    steps_a = simulate_robot_full(robot_a_state) if assignment["Robot-A"] else [{"action":"done","thought":"no tasks","result":"idle","pos":ROBOT_START["Robot-A"],"inventory":[],"completed":[]}]
-    steps_b = simulate_robot_full(robot_b_state) if assignment["Robot-B"] else [{"action":"done","thought":"no tasks","result":"idle","pos":ROBOT_START["Robot-B"],"inventory":[],"completed":[]}]
 
-    # Step 3: Animate both robots simultaneously
-    st.markdown("### 🤖 Live Simulation")
-    grid_col, log_col = st.columns([1, 1])
-    grid_placeholder = grid_col.empty()
-    log_placeholder  = log_col.empty()
+# ── Log renderer ──────────────────────────────────────────────────────────────
+def render_logs(robots):
+    html = ""
+    for name, rs in robots.items():
+        color = ROBOT_COLORS[name]
+        pos = rs["pos"]
+        inv = rs["inventory"]
+        comp = rs["completed"]
+        done = rs.get("done", False)
+        emg = rs.get("emergency", False)
 
-    max_steps = max(len(steps_a), len(steps_b))
-
-    # Current display state
-    display = {
-        "Robot-A": {"pos": ROBOT_START["Robot-A"], "inventory": [], "completed": [], "log": [], "assigned": assignment["Robot-A"]},
-        "Robot-B": {"pos": ROBOT_START["Robot-B"], "inventory": [], "completed": [], "log": [], "assigned": assignment["Robot-B"]},
-    }
-
-    def render_logs():
-        html = ""
-        for rname, rs in display.items():
-            color = ROBOT_COLORS[rname]
+        status = "🏁 DONE" if done else "⚠️ EMERGENCY" if emg else "🤖 ACTIVE"
+        html += (
+            f'<div class="robot-header" style="color:{color}">'
+            f'{status} {name} | pos={pos} | carrying={inv or "∅"} | delivered={len(comp)}'
+            f'</div>'
+        )
+        for entry in rs.get("log", []):
+            action = entry.get("action","move")
+            css = "emergency" if emg and action=="move" else action
             html += (
-                f'<div class="robot-header" style="color:{color}">'
-                f'{"🏁" if rs.get("done") else "🤖"} {rname} | pos {rs["pos"]} | '
-                f'carrying: {rs["inventory"] or "nothing"} | delivered: {rs["completed"]}'
+                f'<div class="log-card {css}">'
+                f'<b>{action.upper()}</b> {entry.get("result","")}<br>'
+                f'<span style="color:#334e6e">💭 {entry.get("thought","")}</span>'
                 f'</div>'
             )
-            for entry in rs["log"][-5:]:
-                css = entry["action"]
-                html += (
-                    f'<div class="log-card {css}">'
-                    f'<b>{entry["action"].upper()}</b> — {entry["result"]}<br>'
-                    f'<span style="color:#94a3b8;font-size:11px">💭 {entry["thought"]}</span>'
-                    f'</div>'
-                )
-        return html
+    return html
 
-    for i in range(max_steps):
-        # Apply step i for each robot if available
-        if i < len(steps_a):
-            s = steps_a[i]
-            display["Robot-A"]["pos"]       = s["pos"]
-            display["Robot-A"]["inventory"] = s["inventory"]
-            display["Robot-A"]["completed"] = s["completed"]
-            display["Robot-A"]["log"].append(s)
-            if s["action"] == "done":
-                display["Robot-A"]["done"] = True
 
-        if i < len(steps_b):
-            s = steps_b[i]
-            display["Robot-B"]["pos"]       = s["pos"]
-            display["Robot-B"]["inventory"] = s["inventory"]
-            display["Robot-B"]["completed"] = s["completed"]
-            display["Robot-B"]["log"].append(s)
-            if s["action"] == "done":
-                display["Robot-B"]["done"] = True
+# ── Main mission ──────────────────────────────────────────────────────────────
+def run_mission(selected_items, api_key):
+    # Orchestrator
+    st.markdown("### 🎯 ORCHESTRATOR — TASK ASSIGNMENT")
+    with st.spinner("Fleet AI assigning tasks…"):
+        assignment = assign_tasks(selected_items, api_key)
+    st.success(f"✅ Robot-A: {assignment['Robot-A']}  |  Robot-B: {assignment['Robot-B']}")
 
-        grid_placeholder.markdown(render_grid(display), unsafe_allow_html=True)
-        log_placeholder.markdown(render_logs(), unsafe_allow_html=True)
+    # Pre-compute simulation
+    with st.spinner("Computing optimal fleet paths (A* + MAPF)…"):
+        frames, final_kpi = simulate_fleet(assignment, ROBOT_START)
+
+    st.markdown(f'<span style="color:#5a7a9a;font-size:12px">Simulation ready — {len(frames)} frames computed</span>', unsafe_allow_html=True)
+    st.divider()
+
+    # Layout
+    st.markdown("### 🤖 LIVE FLEET OPERATIONS")
+    kpi_container  = st.container()
+    grid_col, log_col = st.columns([3, 2])
+    grid_ph = grid_col.empty()
+    log_ph  = log_col.empty()
+    prog    = st.progress(0, text="Mission in progress…")
+
+    total_items = len(selected_items)
+
+    for i, frame in enumerate(frames):
+        with kpi_container:
+            render_kpi(frame["kpi"], frame["robots"], total_items)
+
+        grid_ph.markdown(render_grid(frame), unsafe_allow_html=True)
+        log_ph.markdown(render_logs(frame["robots"]), unsafe_allow_html=True)
+        prog.progress(int((i+1)/len(frames)*100), text=f"Step {i+1}/{len(frames)}")
         time.sleep(speed)
 
-    # Step 4: Summary
+    prog.progress(100, text="Mission complete ✅")
+
+    # Final summary
     st.divider()
-    st.markdown("### 📊 Mission Summary")
-    total_delivered = len(display["Robot-A"]["completed"]) + len(display["Robot-B"]["completed"])
-    total_assigned  = len(selected_items)
-
-    if total_delivered >= total_assigned:
-        st.success(f"✅ Mission Complete! All {total_delivered} items delivered to dispatch zone.")
+    st.markdown("### 📊 MISSION DEBRIEF")
+    delivered = final_kpi.get("total_delivered", 0)
+    if delivered >= total_items:
+        st.success(f"✅ MISSION COMPLETE — All {delivered} items delivered!")
     else:
-        st.warning(f"⚠️ Mission ended. {total_delivered}/{total_assigned} items delivered.")
+        st.warning(f"⚠️ MISSION ENDED — {delivered}/{total_items} items delivered")
 
-    sc1, sc2 = st.columns(2)
-    for col, rname in zip([sc1, sc2], ["Robot-A", "Robot-B"]):
-        color = ROBOT_COLORS[rname]
-        rs = display[rname]
-        with col:
-            st.markdown(f'<b style="color:{color}">{rname}</b>', unsafe_allow_html=True)
-            st.markdown(f"- Assigned: {rs['assigned']}")
-            st.markdown(f"- Delivered: {rs['completed']}")
-            st.markdown(f"- Steps taken: {len(rs['log'])}")
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("Total Steps",      final_kpi.get("total_steps", 0))
+    d2.metric("Collisions Avoided", final_kpi.get("collisions_avoided", 0))
+    d3.metric("Emergency Rerouts",  final_kpi.get("emergency_rerouts", 0))
+    dt = final_kpi.get("delivery_times", [])
+    d4.metric("Avg Delivery Time", f"{round(sum(dt)/len(dt),1) if dt else '--'} steps")
+
+    with st.expander("📋 Full KPI Report"):
+        st.json(final_kpi)
 
 
 # ── Trigger ───────────────────────────────────────────────────────────────────
@@ -252,6 +372,6 @@ if run_btn and selected and api_key:
     try:
         run_mission(selected, api_key)
     except Exception as e:
-        st.error(f"Mission error: {e}")
+        st.error(f"⚠️ MISSION ERROR: {e}")
         import traceback
         st.code(traceback.format_exc())
