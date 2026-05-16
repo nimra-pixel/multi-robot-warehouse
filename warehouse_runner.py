@@ -1,6 +1,7 @@
 # warehouse_runner.py — Robot movement and task execution logic
 
 import json
+import re
 from warehouse_agents import ITEMS, DISPATCH_ZONE
 
 DIRECTIONS = {
@@ -19,27 +20,52 @@ def move(pos, direction):
 
 def parse_action(raw: str) -> dict:
     """Extract JSON from model response robustly."""
+    default = {"action": "move", "thought": "fallback", "direction": "down", "target": None}
+    if not raw:
+        return default
+
     raw = raw.strip()
-    # Strip markdown fences
     for fence in ["```json", "```"]:
         raw = raw.replace(fence, "")
     raw = raw.strip()
-    # Find first { ... }
+
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:
-        return {"action": "done", "thought": "could not parse", "direction": None, "target": None}
+        return default
+
+    candidate = raw[start:end]
+    candidate = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', candidate)
+    candidate = re.sub(r'(?<!\\)\n', ' ', candidate)
+
     try:
-        return json.loads(raw[start:end])
+        result = json.loads(candidate)
+        if "action" not in result:
+            return default
+        if result.get("action") == "move" and result.get("direction") not in DIRECTIONS:
+            result["direction"] = "down"
+        return result
     except Exception:
-        return {"action": "done", "thought": "parse error", "direction": None, "target": None}
+        pass
+
+    text = raw.lower()
+    for action in ["pick", "drop", "done", "move"]:
+        if action in text:
+            if action == "move":
+                for direction in ["up", "down", "left", "right"]:
+                    if direction in text:
+                        return {"action": "move", "thought": "keyword extracted", "direction": direction, "target": None}
+            elif action == "pick":
+                return {"action": "pick", "thought": "keyword extracted", "direction": None, "target": None}
+            elif action == "drop":
+                return {"action": "drop", "thought": "keyword extracted", "direction": None, "target": None}
+            elif action == "done":
+                return {"action": "done", "thought": "keyword extracted", "direction": None, "target": None}
+
+    return default
+
 
 def simulate_robot_step(robot_state: dict, action_obj: dict) -> dict:
-    """
-    Apply one action to robot state.
-    robot_state keys: pos, inventory, completed, log
-    Returns updated robot_state.
-    """
     pos = robot_state["pos"]
     inventory = robot_state["inventory"]
     completed = robot_state["completed"]
@@ -48,7 +74,6 @@ def simulate_robot_step(robot_state: dict, action_obj: dict) -> dict:
     action = action_obj.get("action", "done")
     thought = action_obj.get("thought", "")
     direction = action_obj.get("direction")
-    target = action_obj.get("target")
 
     entry = {"thought": thought, "action": action, "pos_before": pos}
 
@@ -56,10 +81,9 @@ def simulate_robot_step(robot_state: dict, action_obj: dict) -> dict:
         new_pos = move(pos, direction)
         robot_state["pos"] = new_pos
         entry["pos_after"] = new_pos
-        entry["result"] = f"Moved {direction} → {new_pos}"
+        entry["result"] = f"Moved {direction} -> {new_pos}"
 
     elif action == "pick":
-        # Check if any assigned item is at current pos
         picked = False
         for item in list(robot_state["assigned"]):
             if ITEMS.get(item) == pos and item not in inventory and item not in completed:
@@ -73,18 +97,19 @@ def simulate_robot_step(robot_state: dict, action_obj: dict) -> dict:
 
     elif action == "drop":
         if pos == DISPATCH_ZONE and inventory:
-            for item in inventory:
+            dropped = list(inventory)
+            for item in dropped:
                 completed.append(item)
-            entry["result"] = f"Dropped {inventory} at dispatch zone ✅"
+            entry["result"] = f"Dropped {dropped} at dispatch zone"
             robot_state["inventory"] = []
         elif pos != DISPATCH_ZONE:
-            entry["result"] = f"Cannot drop — not at dispatch zone (need {DISPATCH_ZONE}, at {pos})"
+            entry["result"] = f"Cannot drop - not at dispatch zone (need {DISPATCH_ZONE}, at {pos})"
         else:
             entry["result"] = "Nothing in inventory to drop"
         entry["pos_after"] = pos
 
     elif action == "done":
-        entry["result"] = "Robot signals task complete 🏁"
+        entry["result"] = "Robot signals task complete"
         entry["pos_after"] = pos
         robot_state["done"] = True
 
@@ -94,6 +119,7 @@ def simulate_robot_step(robot_state: dict, action_obj: dict) -> dict:
 
     log.append(entry)
     return robot_state
+
 
 def all_items_collected(robot_states: dict) -> bool:
     for rs in robot_states.values():
