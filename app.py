@@ -123,6 +123,12 @@ def assign_tasks(selected_items, api_key):
         # Ensure both robots exist
         if "Robot-A" not in assignment: assignment["Robot-A"] = []
         if "Robot-B" not in assignment: assignment["Robot-B"] = []
+        # Ensure ALL selected items are assigned (fix LLM dropping items)
+        assigned_all = assignment["Robot-A"] + assignment["Robot-B"]
+        unassigned = [i for i in selected_items if i not in assigned_all]
+        for i, item in enumerate(unassigned):
+            key = "Robot-A" if i % 2 == 0 else "Robot-B"
+            assignment[key].append(item)
         return assignment
     except Exception:
         half = len(selected_items) // 2
