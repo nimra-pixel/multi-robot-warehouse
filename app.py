@@ -64,25 +64,34 @@ st.caption("Orchestrator AI assigns tasks · Robots navigate autonomously · Gro
 
 # ── Order selection ───────────────────────────────────────────────────────────
 st.markdown("### 📋 Select Items to Fetch")
-col1, col2, col3, col4 = st.columns(4)
 item_list = list(ITEMS.keys())
+import random as _random
+
+# Preset buttons — must run BEFORE checkboxes so session_state is set first
+pc1, pc2, pc3 = st.columns(3)
+with pc1:
+    if st.button("🎯 First 4 items", use_container_width=True):
+        for i, item in enumerate(item_list):
+            st.session_state[f"item_{item}"] = (i < 4)
+with pc2:
+    if st.button("📦 All 8 items", use_container_width=True):
+        for item in item_list:
+            st.session_state[f"item_{item}"] = True
+with pc3:
+    if st.button("🔀 Random 3", use_container_width=True):
+        picks = set(_random.sample(item_list, 3))
+        for item in item_list:
+            st.session_state[f"item_{item}"] = (item in picks)
+
+# Render checkboxes driven by session_state
+col1, col2, col3, col4 = st.columns(4)
 selected = []
 for i, item in enumerate(item_list):
     col = [col1, col2, col3, col4][i % 4]
     with col:
-        if st.checkbox(f"📦 {item}", value=(i < 4), key=f"item_{item}"):
+        default = st.session_state.get(f"item_{item}", i < 4)
+        if st.checkbox(f"📦 {item}", value=default, key=f"item_{item}"):
             selected.append(item)
-
-pc1, pc2, pc3 = st.columns(3)
-with pc1:
-    if st.button("🎯 First 4 items", use_container_width=True):
-        st.rerun()
-with pc2:
-    if st.button("📦 All 8 items", use_container_width=True):
-        st.rerun()
-with pc3:
-    if st.button("🔀 Random 3", use_container_width=True):
-        st.rerun()
 
 st.markdown(f"**Selected:** {', '.join(selected) if selected else 'None'}")
 st.divider()
